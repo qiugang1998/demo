@@ -8,60 +8,45 @@ import copy
 def clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
 
-
-
-class Embeddings(nn.Module):
-    def __init__(self, vocab, dim):
-        # vocab: 词表大小
-        # dim: 词嵌入的维度
-        super(Embeddings, self).__init__()
-        self.embedding = nn.Embedding(vocab, dim)
+    
+# 位置编码层
+class PositionEmbedding(torch.nn.Module):
+    def __init__(self, embedding_dim, vocab_size, max_len=1000):
         
-    def forward(self, x):
-        return self.embedding(x) 
-    
-    
-    
-# 位置编码
-class PositionalEncoding(nn.Module):
-    def __init__(self, dim, dropout, max_len=1000):
-        # dim: 词嵌入的维度
-        # max_len: 每个句子中包含词的最大个数
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(dropout)
+        super(PositionEmbedding, self).__init__()
+        # max_len: 每个句子中的最大词汇数
         
+        # pos是第几个词,i是第几个维度, d_model是维度总数
+        def get_pe(pos, i, d_model):
+            fenmu = 1e4 ** (i / d_model)
+            pe = pos / fenmu
+
+            if i % 2 == 0:
+                return math.sin(pe)
+            return math.cos(pe)
+
         # 初始化位置编码矩阵
-        P = torch.zeros(max_len, dim)
+        pe = torch.empty(max_len, embedding_dim)
+        for i in range(max_len):
+            for j in range(embedding_dim):
+                pe[i, j] = get_pe(i, j, embedding_dim)
+                
+        pe = pe.unsqueeze(0)
 
-        # 绝对位置矩阵， 形状为 (max_len, 1), 对应论文中的 pos
-        pos = torch.arange(max_len, dtype=torch.float32).reshape(-1, 1)
+        # 定义为不更新的常量
+        self.register_buffer('pe', pe)
 
-        # 每个词嵌入维度的偶数列， 对应公式中的 2i
-        position_2i = torch.arange(0, dim, 2, dtype=torch.float32)
-
-        # 传递给 sin 和 cos 的变量
-        temp = pos / torch.pow(10000, position_2i / dim)
-
-
-        # 计算偶数列位置编码
-        P[:, 0::2] = torch.sin(temp)
-        # 计算奇数列位置编码
-        P[:, 1::2] = torch.cos(temp)
-        
-        
-        
-        # 扩充P的形状为(1,max_len, dim)
-        P = P.unsqueeze(0)
-
-        #位置编码矩阵在训练中是固定不变的，不会随着优化器二更新，将其注册为模型的buffer，
-        #注册为buffer后，在模型保存后再重新加载这个模型，这个位置编码和模型参数会一并加载进来
-        self.register_buffer('P', P)
+        # 词编码层
+        self.embed = nn.Embedding(vocab_size, embedding_dim)
+        # 初始化参数
+        self.embed.weight.data.normal_(0, 0.1)
 
     def forward(self, x):
-        # x: 文本序列的词嵌入表示
+        # [8, 50] -> [8, 50, 32]
+        embed = self.embed(x)
 
-        x = x + self.P[:, :x.shape[1]]
-        return self.dropout(x)
+        # 词编码和位置编码相加
+        return embed + self.pe[:, :x.shape[1]]
         
         
 # 计算注意力机制
@@ -111,7 +96,7 @@ class MultiHeadAttention(nn.Module):
         self.W_v = nn.Linear(embedding_dim, embedding_dim, bias=bias)
         self.W_o = nn.Linear(embedding_dim,embedding_dim, bias=bias)
 
-        
+        self.norm = nn.LayerNorm(normalized_shape=embedding_dim, elementwise_affine=True)
 
     def forward(self, query, key, value, mask=None):
 
@@ -120,8 +105,14 @@ class MultiHeadAttention(nn.Module):
 
         batch_size = query.size(0)
         
-
         
+        clone_query = query.clone()
+        
+        # 试验证明先归一化效果更好
+        # query = self.norm(query)
+        # key = self.norm(key)
+        # value = self.norm(value)
+
 
         query = self.W_q(query).view(batch_size, -1, self.head, self.d_k).transpose(1, 2)
         key = self.W_k(key).view(batch_size, -1, self.head, self.d_k).transpose(1, 2)
@@ -135,8 +126,8 @@ class MultiHeadAttention(nn.Module):
 
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.head * self.d_k)
         
-
-        return self.W_o(x)
+        
+        return self.norm(self.dropout(self.W_o(x)) + clone_query)
     
     
 # 前馈全连接层
@@ -149,130 +140,109 @@ class PositionwiseFeedForward(nn.Module):
         self.dense2 = nn.Linear(hidden_dim, embedding_dim)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
+        self.norm = nn.LayerNorm(normalized_shape=embedding_dim, elementwise_affine=True)
 
     def forward(self, x):
         # x：上一层的输出
-
-        return self.dense2(self.dropout(self.relu(self.dense1(x))))
         
+        clone_x = x.clone()
         
-# 规范化层
-class LayerNorm(nn.Module):
-    def __init__(self, embedding_dim, eps=1e-6):
-        super(LayerNorm, self).__init__()
-        self.a = nn.Parameter(torch.ones(embedding_dim))
-        self.b = nn.Parameter(torch.zeros(embedding_dim))
-        self.eps = eps
-
-    def forward(self, x):
-        mean = x.mean(dim=-1, keepdim=True)
-        std = x.std(dim=-1, keepdim=True)
-        return self.a * (x - mean) / (std + self.eps) + self.b
-    
-    
-    
-# 子层连接
-class SublayerConnection(nn.Module):
-    def __init__(self, embedding_dim, dropout=0.1):
-        super(SublayerConnection, self).__init__()
+        #规范化
+        # x = self.norm(x)
         
-        self.norm = LayerNorm(embedding_dim)
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, x, sublayer):
-        # 接收上一层或者子层的输入作为第一个参数
-        # sublayer: 子层连接中的子层函数
-
-        return x + self.dropout(sublayer(self.norm(x)))
-    
+        return self.norm(self.dropout(self.dense2(self.relu(self.dense1(x)))) + clone_x)
+        
+           
     
 # 编码器层
 class EncoderLayer(nn.Module):
-    def __init__(self, embedding_dim, multi_head_self_attention, feed_forward, dropout):
+    def __init__(self, embedding_dim, head, hidden_dim, dropout):
         # embedding_dim: 词的嵌入维度
-        # multi_head_attention: 多头自注意力层的实例化对象
-        # feed_forward: 前馈全连接层的实例化对象
+        # head: 多头自注意力的头数
+        # hidden_dim: 前馈全连接层中间层的输出维度
+        
+        
         super(EncoderLayer, self).__init__()
         
-        self.multi_head_self_attention = multi_head_self_attention
-        self.feed_forward = feed_forward
-        self.embedding_dim = embedding_dim
-
-        # 编码器中有两个子层连接结构
-        self.sublayer1 = SublayerConnection(embedding_dim, dropout)
-        self.sublayer2 = SublayerConnection(embedding_dim, dropout)
         
+        # 多头自注意力层
+        self.multi_head_self_attention = MultiHeadAttention(head, embedding_dim, dropout)
+        
+        
+        #前馈全连接层
+        self.feed_forward = PositionwiseFeedForward(embedding_dim, hidden_dim, dropout)
+     
 
     def forward(self, x, mask):
         
 
-        x = self.sublayer1(x, lambda x: self.multi_head_self_attention(x, x, x, mask))
+        x = self.multi_head_self_attention(x, x, x, mask)
 
-        return self.sublayer2(x, self.feed_forward)
+        return self.feed_forward(x)
     
     
 # 编码器的实现
 class Encoder(nn.Module):
-    def __init__(self, encoder_layer, N):
+    def __init__(self, embedding_dim, head, hidden_dim, dropout, N):
         # encoder_layer：编码器层的实例化对象
         super(Encoder, self).__init__()
         
-        # 深拷贝 N 个编码器层
-        self.encoder_layers= clones(encoder_layer, N)
+        temp_encoder_layer = EncoderLayer(embedding_dim, head, hidden_dim, dropout)
         
-        # 初始化规范化层，用于编码器的后面
-        self.norm = LayerNorm(encoder_layer.embedding_dim)
+        # 深拷贝 N 个编码器层
+        self.encoder_layers= clones(temp_encoder_layer, N)
+        
 
     def forward(self, x, mask):
         for encoder_layer in self.encoder_layers:
             x = encoder_layer(x, mask)
-        return self.norm(x)
+        return x
     
 # 解码层
 class DecoderLayer(nn.Module):
-    def __init__(self, embedding_dim, multi_head_self_attention, multi_head_attention, feed_forward, dropout):
+    def __init__(self, embedding_dim, head, hidden_dim, dropout):
         # embedding_dim：词嵌入维度
-        # multi_head_self_attention：多头自注意力对象
-        # multi_head_attention：多头注意力对象
-        # feed_forward: 前馈全连接层对象
+        # head：多头自注意力层的头数
+        # hidden_dim: 前馈全连接层中间层的输出维度
+        
         super(DecoderLayer, self).__init__()
         
-        self.embedding_dim = embedding_dim
-        self.multi_head_self_attention = multi_head_self_attention
-        self.multi_head_attention = multi_head_attention
-        self.feed_forward = feed_forward
 
-        self.sublayers = clones(SublayerConnection(embedding_dim, dropout), 3)
+        self.multi_head_self_attention = MultiHeadAttention(head, embedding_dim, dropout)
+        self.multi_head_attention = MultiHeadAttention(head, embedding_dim, dropout)
+        self.feed_forward = PositionwiseFeedForward(embedding_dim, hidden_dim, dropout)
 
-    def forward(self, x, memory, source_mask, target_mask):
-        # x: 上一层的输入
-        # memory: 编码器的输出
 
-        x = self.sublayers[0](x, lambda x: self.multi_head_self_attention(x, x, x, target_mask))
+    def forward(self, x, y, source_mask, target_mask):
+        # y: 上一层的输入
+        # x: 编码器的输出
+
+        y = self.multi_head_self_attention(y, y, y, target_mask)
         
-        x = self.sublayers[1](x, lambda x: self.multi_head_attention(x, memory, memory, source_mask))
+        y = self.multi_head_attention(y, x, x, source_mask)
+        
+        
 
-        return self.sublayers[2](x, self.feed_forward)
+        return self.feed_forward(y)
     
     
     
 # 解码器的实现
 class Decoder(nn.Module):
-    def __init__(self, decoder_layer, N):
-        # encoder_layer：解码器层的实例化对象
+    def __init__(self, embedding_dim, head, hidden_dim, dropout, N):
+        
         super(Decoder, self).__init__()
         
+        temp_decoder_layer = DecoderLayer(embedding_dim, head, hidden_dim, dropout)
         # 深拷贝 N 个解码器层
-        self.decoder_layers= clones(decoder_layer, N)
+        self.decoder_layers= clones(temp_decoder_layer, N)
         
-        # 初始化规范化层，用于解码器的后面
-        self.norm = LayerNorm(decoder_layer.embedding_dim)
 
-    def forward(self, x, memory, source_mask, target_mask):
-        # memory: 编码器的输出
+    def forward(self, x, y, source_mask, target_mask):
+        # x: 编码器的输出
         for decoder_layer in self.decoder_layers:
-            x = decoder_layer(x, memory, source_mask, target_mask)
-        return self.norm(x)
+            y = decoder_layer(x, y, source_mask, target_mask)
+        return y
 
     
 # 输出处理
@@ -283,64 +253,43 @@ class OutPut(nn.Module):
         super(OutPut, self).__init__()
         self.linear = nn.Linear(embedding_dim, vocab_size)
 
-    def forward(self, x):
-        return nn.functional.softmax(self.linear(x), dim=-1)
+    def forward(self, y):
+        return nn.functional.softmax(self.linear(y), dim=-1)
     
-# 编码器-解码器结构
-class EncoderDecoder(nn.Module):
-    def __init__(self, encoder, decoder, source_embed, target_embed, output):
-        # encoder: 编码器对象
-        # decoder：解码器对象
-        # source_embed: 源数据的嵌入函数
-        # target_embed: 目标数据的嵌入函数
-        # output: 对解码器输出进行处理的对象
-        super(EncoderDecoder, self).__init__()
-
-        self.encoder = encoder
-        self.decoder = decoder
-        self.source_embed = source_embed
-        self.target_embed = target_embed
-        self.output = output
-
-    def forward(self, source, target, source_mask, target_mask):
-        memory = self.encoder(self.source_embed(source), source_mask)
-        x = self.decoder(self.target_embed(target), memory, source_mask, target_mask)
-        return  self.output(x)
-    
-    
-# Transformer 模型
-def TransformerModel(source_vocab, target_vocab, N=6, embedding_dim=512, hidden_dim=2048, head=8, dropout=0.1):
-    # source_vocab: 源数据特征总数(词汇总数）
-    # target_vocab: 目标数据特征总数(词汇总数）
-    # N: 编码器解码器堆叠数
-    # embedding_dim: 词嵌入维度
-    # hidden_dim: 编码器中前馈全连接网络第一层的输出维度
-    # head: 多头注意力结构中的多头数
-    # dropout: 置零比率
-
-    # 实例化多头注意力
-    multi_head_attention = MultiHeadAttention(head, embedding_dim, dropout)
-
-    # 实例化前馈全连接层
-    feed_forward = PositionwiseFeedForward(embedding_dim, hidden_dim, dropout)
-
-    # 实例化位置编码类
-    positional_encoding = PositionalEncoding(embedding_dim, dropout)
-
-    # 实例化 EncoderDecoder 对象
-    # 编码器：一个 attention + 一个前馈全连接
-    # 解码器： ；两个 attention + 一个前馈全连接
-    model = EncoderDecoder(
-        Encoder(EncoderLayer(embedding_dim, copy.deepcopy(multi_head_attention), copy.deepcopy(feed_forward), dropout), N),
-        Decoder(DecoderLayer(embedding_dim, copy.deepcopy(multi_head_attention), copy.deepcopy(multi_head_attention), copy.deepcopy(feed_forward), dropout), N),
-        nn.Sequential(Embeddings(source_vocab, embedding_dim), copy.deepcopy(positional_encoding)), 
-        nn.Sequential(Embeddings(target_vocab, embedding_dim), copy.deepcopy(positional_encoding)),
-        OutPut(embedding_dim, target_vocab) 
-    )
-
-    # 初始化模型参数, 如果参数的维度大于 1，初始化为一个服从均匀分布的矩阵
-    for parameter in model.parameters():
-        if parameter.dim() > 1:
-            nn.init.xavier_uniform(parameter)
+# 主模型
+class Transformer(torch.nn.Module):
+    def __init__(self, source_vocab, target_vocab, N, embedding_dim, hidden_dim, head, dropout):
         
-    return model
+        # source_vocab: 源数据特征总数(词汇总数）
+        # target_vocab: 目标数据特征总数(词汇总数）
+        # N: 编码器解码器堆叠数
+        # embedding_dim: 词嵌入维度
+        # hidden_dim: 编码器中前馈全连接网络第一层的输出维度
+        # head: 多头注意力结构中的多头数
+        # dropout: 置零比率
+
+        
+        super(Transformer, self).__init__()
+        
+        self.embed_x = PositionEmbedding(embedding_dim, source_vocab)
+        self.embed_y = PositionEmbedding(embedding_dim, target_vocab)
+        self.encoder = Encoder(embedding_dim, head, hidden_dim, dropout, N)
+        self.decoder = Decoder(embedding_dim, head, hidden_dim, dropout, N)
+        self.output = torch.nn.Linear(embedding_dim, target_vocab)
+
+    def forward(self, x, y, mask_x, mask_y):
+
+
+        x = self.embed_x(x)
+        y = self.embed_y(y)
+
+        # 编码器计算
+        x = self.encoder(x, mask_x)
+
+        # 解码器计算
+        y = self.decoder(x, y, mask_x, mask_y)
+
+        # 全连接输出
+        y = self.output(y)
+
+        return y

@@ -12,7 +12,9 @@ def clones(module, N):
 # 位置编码层
 class PositionEmbedding(torch.nn.Module):
     def __init__(self, embedding_dim, vocab_size, max_len=1000):
-        
+        # embedding_dim：词嵌入维度
+        # vocab_size: 所有训练的词汇数
+        # max_len: 一个句子中最大的词汇数
         super(PositionEmbedding, self).__init__()
         # max_len: 每个句子中的最大词汇数
         
@@ -78,6 +80,9 @@ def attention(query, key, value, mask=None, dropout=None):
 class MultiHeadAttention(nn.Module):
     
     def __init__(self, head, embedding_dim, dropout=0.1, bias=False):
+        # embedding_dim：词嵌入维度
+        # head：多头注意力中的头数
+        
         super(MultiHeadAttention, self).__init__()
 
         assert embedding_dim % head == 0
@@ -254,7 +259,7 @@ class Decoder(nn.Module):
 class OutPut(nn.Module):
     def __init__(self, embedding_dim, vocab_size):
         # embedding_dim: 词嵌入维度
-        # vocab_size: 词表大小
+        # vocab_size: 输出的词表大小
         super(OutPut, self).__init__()
         self.linear = nn.Linear(embedding_dim, vocab_size)
 

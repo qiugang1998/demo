@@ -108,10 +108,10 @@ class MultiHeadAttention(nn.Module):
         
         clone_query = query.clone()
         
-        # 试验证明先归一化效果更好
-        # query = self.norm(query)
-        # key = self.norm(key)
-        # value = self.norm(value)
+        #试验证明先归一化效果更好
+        query = self.norm(query)
+        key = self.norm(key)
+        value = self.norm(value)
 
 
         query = self.W_q(query).view(batch_size, -1, self.head, self.d_k).transpose(1, 2)
@@ -127,7 +127,8 @@ class MultiHeadAttention(nn.Module):
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.head * self.d_k)
         
         
-        return self.norm(self.dropout(self.W_o(x)) + clone_query)
+        # return self.norm(self.dropout(self.W_o(x)) + clone_query)
+        return self.dropout(self.W_o(x)) + clone_query
     
     
 # 前馈全连接层
@@ -148,9 +149,10 @@ class PositionwiseFeedForward(nn.Module):
         clone_x = x.clone()
         
         #规范化
-        # x = self.norm(x)
+        x = self.norm(x)
         
-        return self.norm(self.dropout(self.dense2(self.relu(self.dense1(x)))) + clone_x)
+        #return self.norm(self.dropout(self.dense2(self.relu(self.dense1(x)))) + clone_x)
+        return self.dropout(self.dense2(self.relu(self.dense1(x)))) + clone_x
         
            
     
@@ -184,7 +186,10 @@ class EncoderLayer(nn.Module):
 # 编码器的实现
 class Encoder(nn.Module):
     def __init__(self, embedding_dim, head, hidden_dim, dropout, N):
-        # encoder_layer：编码器层的实例化对象
+        # embedding_dim：词嵌入维度
+        # head: 多头注意力中的头
+        # hidden_dim：前馈全连接层中间层的输出维度
+        # N: 编码层的个数
         super(Encoder, self).__init__()
         
         temp_encoder_layer = EncoderLayer(embedding_dim, head, hidden_dim, dropout)

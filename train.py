@@ -1,8 +1,10 @@
 from model import *
 from mask import *
 import time
+from data import *
 
-source_vocab = target_vocab = 39
+source_vocab = 39
+target_vocab = 39
 N = 3
 embedding_dim = 32
 hidden_dim = 64
@@ -13,35 +15,37 @@ model = model.cuda()
 
 
 loss_func = torch.nn.CrossEntropyLoss()
-optim = torch.optim.Adam(model.parameters(), lr=0.002)
+optim = torch.optim.Adam(model.parameters(), lr=0.001)
 sched = torch.optim.lr_scheduler.StepLR(optim, step_size=3, gamma=0.5)
 loss_func = loss_func.cuda()
 
 
 
-# 训练数据集
+# # 训练数据集
 
-dataset = Dataset(100000)
+# dataset = Dataset(100000)
 
 
-# 数据加载器
-loader = torch.utils.data.DataLoader(dataset=dataset,
-                                     batch_size=8,
-                                     drop_last=True,
-                                     shuffle=True,
-                                    collate_fn=None)
+# # 数据加载器
+# loader = torch.utils.data.DataLoader(dataset=dataset,
+#                                      batch_size=8,
+#                                      drop_last=True,
+#                                      shuffle=True,
+#                                     collate_fn=None)
 
 
 
 
 start_time = time.time()
-for epoch in range(10):
+for epoch in range(20):
     
     print("------第 {} 轮训练开始------".format(epoch + 1))
     
-    i = 0
+
     
-    for x, y in loader:
+    for i, (x, y) in enumerate(loader):
+        
+        
         
         x = x.cuda()
         y = y.cuda()
@@ -55,10 +59,10 @@ for epoch in range(10):
 
 
         # 在训练时,是拿y的每一个字符输入,预测下一个字符,所以不需要最后一个字
-        # [8, 50, 39]
+        # [8, 50, 13]
         pred_y = model(x, y[:, :-1], x_mask, y_mask)
 
-        # [8, 50, 39] -> [400, 39]
+        # [8, 50, 13] -> [400, 13]
         pred_y = pred_y.reshape(-1, 39)
 
         # [8, 50] -> [400]
@@ -66,7 +70,7 @@ for epoch in range(10):
 
 
         # 忽略掉 <PAD>
-        select = y_truth != zidian_y['<PAD>']
+        select = y_truth != zidian_x['<PAD>']
         y_truth = y_truth[select]
         pred_y = pred_y[select]
 
@@ -84,10 +88,9 @@ for epoch in range(10):
             print("epoch:{epoch}, i:{i}, lr:{lr}, loss:{loss}, accuracy:{accuracy}\n"
                   .format(epoch=epoch, i=i, lr=lr, loss=loss.item(), accuracy=accuracy))
             
-        i += 1
     
     sched.step()        
-    torch.save(model, "model_{}.pth".format(epoch + 1))
+    torch.save(model, "output/model_{}.pth".format(epoch + 1))
 
 end_time = time.time()
 print("训练结束, 用时:{time}".format(time=(end_time - start_time) / 3600))
